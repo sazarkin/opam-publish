@@ -20,12 +20,9 @@ let () =
 
 let (/) a b = String.concat "/" [a;b]
 
-let github_root = "git@github.com:"
-
-type github_repo = string * string (* owner, name *)
-
-let repo_dir root (repo_owner, repo_name) =
-  OpamFilename.Op.(root / "repos" / (repo_owner ^ "%" ^ repo_name))
+let repo_dir root repo =
+  let name = Uri.of_string(repo) |> Uri.path |> (String.split_on_char '/') |> (String.concat "%") in
+  OpamFilename.Op.(root / "repos" / name)
 
 let print_package_list sep = function
   | nv::r as packages when
@@ -273,7 +270,7 @@ module GH = struct
 
 end
 
-let init_mirror root repo user token =
+let init_mirror root repo =
   let dir = repo_dir root repo in
   if OpamFilename.exists_dir dir then
     OpamFilename.rmdir dir;
@@ -281,23 +278,22 @@ let init_mirror root repo user token =
   OpamConsole.msg
     "Cloning the package repository, this may take a while...\n";
   git_command ~verbose:true
-    ["clone";
-     github_root^(fst repo)/(snd repo)^".git";
-     OpamFilename.Dir.to_string dir];
-  GH.fork token repo;
-  git_command ~dir ["remote"; "add"; "user"; github_root^user/(snd repo)]
+    ["clone"; repo; OpamFilename.Dir.to_string dir]
 
 let update_mirror root repo branch =
   let dir = repo_dir root repo in
   OpamConsole.msg "Fetching the package repository, this may take a while...\n";
-  git_command ~dir ["fetch"; "--multiple"; "origin"; "user"];
+  git_command ~dir ["fetch"; "--multiple"; "origin";];
   git_command ~dir ["reset"; "origin"/branch; "--hard"]
 
 let add_files_and_pr
-    root ?(dry_run=false) repo user token title message
-    branch target_branch files =
+    root ?(dry_run=false) repo title _message
+    branch _target_branch files =
+  let _ = dry_run in
   let mirror = repo_dir root repo in
   let () =
+    git_command ~dir:mirror
+      ["checkout"; "-b"; branch];
     List.iter (fun (rel_path, contents) ->
         match contents with
         | None ->
@@ -312,38 +308,20 @@ let add_files_and_pr
           git_command ~dir:mirror ["add"; rel_path])
       files;
     git_command ~dir:mirror
-      ["commit"; "-m"; title];
-    git_command ~dir:mirror
-      ["push"; "user"; "+HEAD:"^branch]
+      ["commit"; "-m"; title]
   in
   OpamFilename.in_dir mirror (fun () -> ignore (Sys.command "git show HEAD"));
-  if dry_run then OpamStd.Sys.exit_because `Success;
-  if not (OpamConsole.confirm "\nFile a pull-request for this patch ?") then
-    OpamStd.Sys.exit_because `Aborted;
-  let url =
-    GH.pull_request title user token repo ~text:message branch target_branch
-  in
-  OpamConsole.msg "Pull-requested: %s\n" url;
-  try
-    let auto_open =
-      if OpamStd.Sys.(os () = Darwin) then "open" else "xdg-open"
-    in
-    OpamSystem.command [auto_open; url]
-  with OpamSystem.Command_not_found _ -> ()
+  if not (OpamConsole.confirm
+      "\nPush this branch to opam repo?")
+  then OpamStd.Sys.exit_because `Aborted;
+  git_command ~dir:mirror ["push"; "origin"; "+HEAD:"^branch];
+  OpamStd.Sys.exit_because `Success
 
 let submit root ?dry_run repo target_branch title msg packages files =
-  (* Prepare the repo *)
   let mirror_dir = repo_dir root repo in
-  let user, token =
-    if not OpamFilename.(exists_dir Op.(mirror_dir / ".git" )) then
-      let user, token = GH.get_user_token root repo in
-      init_mirror root repo user token;
-      user, token
-    else
-    let user, token = GH.get_user_token root repo in
-    user, token
-  in
-  (* pull-request processing *)
+  if not OpamFilename.(exists_dir Op.(mirror_dir / ".git" )) then
+    init_mirror root repo
+  else ();
   update_mirror root repo target_branch;
   let branch = user_branch packages in
-  add_files_and_pr root ?dry_run repo user token title msg branch target_branch files
+  add_files_and_pr root ?dry_run repo title msg branch target_branch files

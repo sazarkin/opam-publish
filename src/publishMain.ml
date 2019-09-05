@@ -428,7 +428,7 @@ module Args = struct
       "Show what would be submitted, but don't file a pull-request"
 
   let repo =
-    value & opt repo_conv ("ocaml", "opam-repository") &
+    value & opt string "git@github.com:ocaml/opam-repository.git" &
     info ["repo"] ~docs ~docv:"REPO" ~doc:
       "The package repository to submit to, in the form $(b,owner/name)"
 
